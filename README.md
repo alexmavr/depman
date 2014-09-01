@@ -1,4 +1,0 @@
-depman
-======
-
-Dependability Manager 
