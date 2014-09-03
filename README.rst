@@ -15,7 +15,7 @@ Depman is a run-time manager that controls the operation of Checkpoint/Restart a
 It resolves common error profiles such as unreachable cores or silent data corruptions by utilizing available system-level actions.
 
 
-Depman utilizes two novel approaches the field of systems dependability:
+Depman utilizes two novel approaches in the field of systems dependability:
 
 - When the target platform is underutilized, the remaining tasks are assigned on the chip through a novel thermal-aware algorithm, aiming to minimize the creation of thermal hotspots.
 - The waste time of the C/R scheme is minimized through an adaptive closed-loop optimization scheme. After each failure, the mean time to failure of the system is estimated and checkpoint placements are adjusted accordingly.
