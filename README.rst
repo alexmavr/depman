@@ -32,7 +32,7 @@ For a quick overview of the Depman tool, take a look at the
 
 The complete documentation, analysis and experimental results are located in the 
 `Diploma Thesis 
-<https://github.com/afein/depman/blob/master/Thesis.pdf?raw=true>`_/
+<https://github.com/afein/depman/blob/master/Thesis.pdf?raw=true>`_.
 
 A conference paper based on the thesis work is currently under peer review, outlining the closed-loop checkpoint interval optimization scheme and the thermal-aware task reallocation algorithm. 
 
