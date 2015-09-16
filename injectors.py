@@ -16,8 +16,21 @@ class injector(object):
     def __init__(self, diagnostic):
         self.diagnostic = diagnostic
         self.f = open(self.filename, 'r')
+        self.mttfs = []
+        self.times = []
+        for line in self.f.readlines():
+            tokens = line.split()
+            self.times.append(int(tokens[0]))
+            self.mttfs.append(int(tokens[1]))
         self.timestamp = time()
         self.probability = 0
+        self.current_mttf = self.mttfs[0]
+        self.current_index = 0
+        self.final_index = False
+        if len(self.times) > 1:
+            self.current_index = 1
+            
+        self.t0 = time()
 
     @abc.abstractmethod
     def inject(self):
@@ -31,10 +44,22 @@ class injector(object):
         ''' update the injector's probability for the next timestep '''
         timestamp = time()
         while True:
+            if not self.final_index and (time() - self.t0) > self.times[self.current_index] :
+                self.current_mttf = self.mttfs[self.current_index]
+                print len(self.times)
+                print ">>>>>>>>>>>>>. time exceeded" # TODO measurements
+                print "Injection MTTF changed to " + str(self.mttfs[self.current_index])
+                logging.info("Injection MTTF changed to " + str(self.mttfs[self.current_index]))
+                # #TODO: measurements measurements
+                self.diagnostic.manager.mttffd.write("### MTTF switch")
+                self.diagnostic.manager.mttffd.flush()
+                if self.current_index < len(self.times) - 1:
+                    self.current_index += 1
+                else:
+                     self.final_index = True
             try:
-                self.mttf = int(self.f.readline())
                 deltat = timestamp - self.timestamp
-                self.probability = 1 - exp(-(deltat/self.mttf)) # TODO: parameterize for different TTF distributions
+                self.probability = 1 - exp(-(deltat/self.current_mttf)) # TODO: parameterize for different TTF distributions
                 break
             except ValueError: # raised by empty line, EOF or error
                 self.f.seek(0)  # start from the top of the file
@@ -56,6 +81,11 @@ class injectorManager(object):
         for i in diagnostics:
             self.injectors += i.injectors
         self.min_Deltat = 0 # The minimum interval between probability evaluations
+
+        # TODO: measurements
+
+        self.current_mttf = self.injectors[0].current_mttf
+        sleep(2)
         self._spawn_injector_processor()
 
     def _spawn_injector_processor(self):
@@ -78,6 +108,7 @@ class injectorManager(object):
             map(lambda x:x.update(), self.injectors)
             sleep(self.min_Deltat)
             for i in self.injectors:
+                self.current_mttf = i.current_mttf
                 rand = random()
                 #print "rand: " + str(rand) + " probab: " + str(i.probability)
                 if rand < i.probability and not i.disabled:
@@ -87,6 +118,13 @@ class injectorManager(object):
                     break
         self.halt = False
 
+class benchmarkInjector(injector):
+    ''' Injects an RCCE process exit failure '''
+    filename = benchmarkInjectorFile
+
+    def inject(self):
+        print "Injecting DUE benchmark"
+        self.diagnostic.fail()
 
 class processExitInjector(injector):
     ''' Injects an RCCE process exit failure '''

@@ -10,11 +10,13 @@ from subprocess import Popen, call, check_output, PIPE, STDOUT
 from Queue import Queue
 from collections import deque
 from threading import Lock, Thread
+from math import sqrt
 
-from scc_diagnostics import processExit, coreReachability
+from scc_diagnostics import processExit, coreReachability, benchmark
 from infoli_diagnostics import infoliOutputDivergence
 from scc_countermeasures import countermeasure_enum
 from injectors import injectorManager
+from monitors import checkpointMonitor
 
 from config import *
 
@@ -25,16 +27,23 @@ class depman(object):
     def __init__(self):
         ''' Depman initialization '''
         # parse arguments
-        if len(sys.argv) < 8:
-            sys.exit("Please provide enough arguments (nue, hostfile, restart executable, executable, parameters)");
+        #if len(sys.argv) < 8:
+        #    sys.exit("Please provide enough arguments (nue, hostfile, restart executable, executable, parameters)");
 
         offset = 1  # argument offset
 
         self.fault_injection = False
+        self.benchmarking = False
         if sys.argv[1] == '-i':
             ''' Fault Injection mode '''
             self.fault_injection = True
             offset = 2
+        elif sys.argv[1] == '-b':
+            ''' Injection - MTTF estimation benchmarking mode '''
+            self.benchmarking = True
+            self.fault_injection = True
+            offset = 3
+            moving_avg_N = int(sys.argv[2])
 
         if sys.argv[offset] == '-nue':
             self.num_cores = int(sys.argv[offset+1])
@@ -55,6 +64,11 @@ class depman(object):
         # set executables
         self.restart_exec = sys.argv[offset+4]
         self.exec_list = sys.argv[(offset+5):]
+        self.restarted = False
+        self.latencies = []
+        self.intervals = []
+        self.interval = self.latency = 1
+        self.initial_steps = int(self.exec_list[-1])
 
         # parse initial list of cores from the hosts file
         self.hostfd = open(os.path.join(os.getcwd(), self.hostfile), 'r')
@@ -63,6 +77,11 @@ class depman(object):
         self.hostfd.close()
         self.cores = self.initial_cores[:]
 
+        # TODO: measurements
+        self.energy = open(sim_dump_location + 'times/energy200', 'w')
+        self.mttffd = open(sim_dump_location + 'MTTF_estimates', 'w')
+
+        # infoli-specific
         self.cells = int(sys.argv[offset+6]) * int(sys.argv[offset+7])
         self.update_cellcount()
 
@@ -83,10 +102,11 @@ class depman(object):
         self.sim_dir = sim_dump_location
 
         self.prev_globalmax = 0     # (infoli-specific) previous maximum recoverable simulation step
-        self.min_step = 0
+        self.min_step = 120000           # infoli-specific
         self.checkpoints = []     # locations of checkpoints
 
         # create the safe location if it doesnt exist
+        call(['rm','-rf', safe_location])
         if not os.path.exists(safe_location):
             try:
                 os.makedirs(safe_location)
@@ -95,25 +115,34 @@ class depman(object):
                 exit(1)
             else:
                 logging.info("Safe location directory successfully created")
+        else:
+            print "cleaning up safe location"
 
         # The depman lock is held by the master thread while a simulation is running
         self.lock = Lock()
 
         # start simulation and create the diagnostics
-        self.rccerun(self.exec_list)
+        self.rccerun(self.exec_list, True)
 
-        sleep(4) #wait for the task to be initially spawned at the SCC TODO: no error detection at this time
+        sleep(3) #wait for the task to be initially spawned at the SCC 
         self.diagnostics = []
-        if 'processExit' in diagnostics:
-            self.diagnostics.append(processExit(self))
-        if 'infoliOutputDivergence' in diagnostics:
-            self.diagnostics.append(infoliOutputDivergence(self))
-        if 'coreReachability' in diagnostics:
-            self.diagnostics.append(coreReachability(self, 3))
-        if 'infoliOutputDivergence' not in diagnostics and use_SDC_checkpoint:
-            print "use_SDC_checkpoint is True but no SDC detection diagnostic is used."
-            loggin.warning("use_SDC_checkpoint is True but no SDC detection diagnostic is used.")
-            use_SDC_checkpoint = False
+        if self.benchmarking:
+            self.diagnostics.append(benchmark(self))
+        else:
+            if 'processExit' in diagnostics:
+                self.diagnostics.append(processExit(self))
+            if 'infoliOutputDivergence' in diagnostics:
+                self.diagnostics.append(infoliOutputDivergence(self))
+            if 'coreReachability' in diagnostics:
+                self.diagnostics.append(coreReachability(self, 3))
+            if 'infoliOutputDivergence' not in diagnostics and use_SDC_checkpoint:
+                print "use_SDC_checkpoint is True but no SDC detection diagnostic is used."
+                loggin.warning("use_SDC_checkpoint is True but no SDC detection diagnostic is used.")
+                use_SDC_checkpoint = False
+
+        # always have an stdout monitor to measure intervals and latencies during the first run
+        if self.benchmarking or 'coreReachability' not in diagnostics:
+            checkpointMonitor(self)
 
         # Initialize the countermeasure procedure
         self.current_counter_proc = []
@@ -126,6 +155,7 @@ class depman(object):
 
         # Start the fault injection manager if requested
         if self.fault_injection:
+            sleep(8)
             self.injector = injectorManager(self.diagnostics)
             logging.info("Fault Injection module initialized")
 
@@ -252,15 +282,21 @@ class depman(object):
         self.num_cores = len(cores)
         logging.info("cores changed to %d", len(cores))
 
-    def rccerun(self, exec_list):
+    def rccerun(self, exec_list, pipe):
         ''' Spawns an RCCE process '''
 
         print [rccerun_path] + ['-nue'] + [str(len(self.cores))] + \
                         ['-f'] + [self.hostfile] + exec_list
-        self.simulation = Popen( \
+        if pipe:
+            self.simulation = Popen( \
                         [rccerun_path] + ['-nue'] + [str(len(self.cores))] + \
                         ['-f'] + [self.hostfile] + exec_list,
                         stderr=STDOUT, stdout=PIPE)
+        else:
+            self.simulation = Popen( \
+                        [rccerun_path] + ['-nue'] + [str(len(self.cores))] + \
+                        ['-f'] + [self.hostfile] + exec_list)
+
         logging.info("Simulation initialized for %d cores", len(self.cores))
 
     def determine_countermeasures(self):
@@ -285,18 +321,25 @@ class depman(object):
             Waits for the simulation to exit, processes failed diagnostics and
             performs the determined countermeasures, if any
         '''
-        with self.lock:
-            logging.info("waiting for simulation") #verbose
-            ret = self.simulation.wait() 
-            logging.info("Simulation returned exit code: %d", ret) #verbose
-            self.wait_diagnostics()
+        logging.info("waiting for simulation") #verbose
+        ret = self.simulation.wait() 
+        logging.info("Simulation returned exit code: %d", ret) #verbose
+        self.wait_diagnostics()
+
+        process = Popen("sccBmc -c status | grep 3V3SCC",
+                shell=True,
+                stdout=PIPE,
+                )
+        stdout_list = process.communicate()[0].split('\n')
+        print stdout_list
+        self.energy.write(str(time()) + " " + str(stdout_list) + '\n')
+        self.energy.flush()
 
         # Execution is completed when the simulation is stopped with no failed diagnostics
         failed = self.failed_diagnostics()
         while len(failed) == 0 and any(map(lambda x: not x.completed, self.diagnostics)):
             # wait for incomplete diagnostics
             failed = self.failed_diagnostics()
-            sleep(1)
 
         if len(failed) == 0:
                 logging.info("No diagnostics failed, exiting")
@@ -310,10 +353,29 @@ class depman(object):
             mttf_estimate = sum(self.mttf_values) / float(len(self.mttf_values))
             print "MTTF estimate: " + str(mttf_estimate)
             logging.info("MTTF estimate: " + str(mttf_estimate))
+            self.mttffd.write(str(time()) + " " + str(mttf_estimate)+"\n") 
+            self.mttffd.flush()
 
-        
-        # TODO: adjust checkpoint interval for optimality here
-        # TODO: perform distinct SDC and DUE checks
+        # Estimation of Checkpoint Interval and Latency
+        if len(self.intervals) != 0:
+            self.interval = sum(self.intervals) / len(self.intervals)
+
+        if len(self.latencies) != 0:
+            self.latency = sum(self.latencies) / len(self.latencies)
+
+        print "estimated checkpoint interval: " + str(self.interval)
+        print "estimated checkpoint latency: " + str(self.latency)
+        # CI optimization
+        # TODO: add case for latency > 1/2 mttf
+        #mttf_estimate = int(open(benchmarkInjectorFile).read())
+        #print "mttf value: " + str(mttf_estimate)
+        tau_opt = sqrt(2 * mttf_estimate * self.latency) - self.latency 
+        print "optimal checkpoint interval in time: " + str(tau_opt)
+        tau_opt_literal_steps = self.initial_steps * tau_opt / self.interval
+        tau_opt_steps = int(round(tau_opt_literal_steps / prec_interv) * prec_interv)
+        self.exec_list[-1] = str(abs(tau_opt_steps))
+        print "optimal checkpoint interval in steps:" + str(abs(tau_opt_steps)) 
+        logging.info("New optimal checkpoint interval in steps:" + str(self.exec_list[-1]))
 
         # Check if a new countermeasure procedure needs to be calculated
         advance = self.new_DUE_checkpoint()
@@ -329,7 +391,9 @@ class depman(object):
             self.current_counter_proc = self.determine_countermeasures()
             logging.info("New countermeasure procedure determined")
 
+
         # Perform the next sequence from the list of countermeasures
+        print "performing countermeasures"
         while len(self.current_counter_proc) > 0:
             countermeasures = self.current_counter_proc.pop(0)
             cfailed = False
@@ -340,6 +404,7 @@ class depman(object):
             if not cfailed:
                 break
 
+        print "reinitializing diagnostics"
         self.unset_failed_diagnostics()
         self.stopped = False
         self.reinitialize_diagnostics()
@@ -348,6 +413,7 @@ class depman(object):
         mttr = time() - self.timestamp
         self.mttr_values.append(mttr)
         print "MTTR estimate: " + str(sum(self.mttr_values) / float(len(self.mttr_values))) # DEBUG
+        logging.info("MTTR estimate: " + str(sum(self.mttr_values) / float(len(self.mttr_values))))
         print "Repair Completed" #DEBUG
 
         # Restart the TTF timer 
@@ -355,24 +421,36 @@ class depman(object):
 
         # Reinitialize injectors
         if self.fault_injection:
+            sleep(18) # TODO: MEASUREMENTS
+            print "reinitializing injectors"
             self.injector.reinit_injectors()
+
+        #measurements
+        process = Popen("sccBmc -c status | grep 3V3SCC",
+                shell=True,
+                stdout=PIPE,
+                )
+        stdout_list = process.communicate()[0].split('\n')
+        self.energy.write(str(time()) + " " + str(stdout_list) + "\n")
+        self.energy.flush()
 
     def stop(self):
         ''' Halt the simulation using a kill script and 
             a SIGKILL on the RCCE process
         '''
-        self.timestamp = time()
-        self.stopped = True
-        if self.fault_injection:
-            self.halt_injectors()
-        call( [rccerun_path] + ['-nue'] + [str(self.num_cores)] + \
-                ['-f'] + [self.hostfile] + [killfoli_path])
-        try:
-            os.kill(self.simulation.pid, SIGKILL)
-            logging.info("Signaled SIGKILL to the simulation") #verbose
-        except OSError:
-            pass #process already killed through killfoli
-        logging.warning("Simulation stopped")
+        with self.lock:
+            self.timestamp = time()
+            self.stopped = True
+            if self.fault_injection:
+                self.halt_injectors()
+            call( [rccerun_path] + ['-nue'] + [str(self.num_cores)] + \
+                    ['-f'] + [self.hostfile] + [killfoli_path])
+            try:
+                os.kill(self.simulation.pid, SIGKILL)
+                logging.info("Signaled SIGKILL to the simulation") #verbose
+            except OSError:
+                pass #process already killed through killfoli
+            logging.warning("Simulation stopped")
 
     def failed_diagnostics(self):
         ''' Return a list of the diagnostics that have failed '''
@@ -383,6 +461,8 @@ def main():
     dm = depman()
     while not dm.completed:
         dm.event_loop()
+
+
     print "execution completed"
 
 if __name__=="__main__":

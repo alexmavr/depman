@@ -44,7 +44,7 @@ def wait_for_cores(core_names, timeout):
             available_cores = int(status[-10:-8])
 
         if time() - t0 > timeout:
-            logging.error("Timeout exceeded for %s cores", expected)
+            logging.error("Boot Timeout exceeded for %s cores", len(core_names))
             return False
     sleep(10)
     status = check_output(['sccBoot', '-s'])
@@ -73,25 +73,45 @@ class restartSimulation(countermeasure):
     def __init__(self, manager):
         self.manager = manager
 
+    def delete_checkpoint(self, step):
+        call(['rm', '-rf', safe_location + str(step)])
+        print "Discarding checkpoint at step " + str(step)
+        logging.info("Discarding checkpoints at step " + str(step))
+
     def perform(self):
-        logging.info("performing the Restart Simulation countermeasure")
+        self.manager.restarted = True
+
+        logging.info("performing the Restart Simulation countermeasure") #DEBUG
+        self.manager.checkpoints = sorted(self.manager.checkpoints) 
         print self.manager.checkpoints
-        if any(isinstance(x, infoli_diagnostics.infoliOutputDivergence) for x in self.manager.failed_diagnostics()):   #infoli-specific
-            # check if the SDC detection diagnostic has failed, and use the SDC checkpoint
-            print sorted(self.manager.checkpoints)
-            checkpoint = max(self.manager.checkpoints)
+        #TODO: min_step is infoli-specific
+        while len(self.manager.checkpoints) >= 2 and \
+                    self.manager.checkpoints[1] < self.manager.min_step:    
+            self.delete_checkpoint(self.manager.checkpoints.pop(0))
+
+        # infoli-specific: check if the SDC detection diagnostic has failed
+        if any(isinstance(x, infoli_diagnostics.infoliOutputDivergence) for x \
+                   in self.manager.failed_diagnostics()):   
+            checkpoint = self.manager.checkpoints[0]
+            for step in sorted(self.manager.checkpoints)[1:]:
+                self.delete_checkpoint(step)
+            self.manager.checkpoints = [self.manager.checkpoints[0]]
+
+            if checkpoint > self.manager.min_step:
+                #FUTURE-TODO: eradicate this case
+                logging.warning("Could not locate a checkpoint before the SDC detector. The file should be rechecked")
         else:
             checkpoint = max(self.manager.checkpoints)
 
-        print "Restarting from step" + str(checkpoint)
-        logging.info("Restarting from step " + str(checkpoint))
+        print "Restarting from simulation step " + str(checkpoint)
+        logging.info("Restarting from simulation step " + str(checkpoint))
 
         with self.manager.lock:
             # Copy safe checkpoints
             for i in range(self.manager.num_cores):
                 call( ['cp', '-f', '-u', safe_location + str(checkpoint) + '/ckptFile%d.bin' %i, sim_dump_location])
                 call( ['cp', '-f', '-u', safe_location + str(checkpoint) + '/InferiorOlive_Output%d.txt' %i, sim_dump_location]) 
-            self.manager.rccerun([self.manager.restart_exec] + self.manager.exec_list[1:])
+            self.manager.rccerun([self.manager.restart_exec] + self.manager.exec_list[1:], False)   # use False to avoid piping stdout for diagnostics - useful for measurements
         logging.info("Restart Simulation countermeasure completed")
         return True
 

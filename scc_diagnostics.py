@@ -2,15 +2,16 @@ import logging
 import abc
 import sys
 from threading import Lock
-from monitors import monitor, stdoutMonitor, corePinger, fileReader, lineProcessor
-from injectors import processExitInjector, coreShutdownInjector, coreFailureInjector
+from monitors import monitor, checkpointMonitor, corePinger, fileReader, lineProcessor
+from injectors import processExitInjector, coreShutdownInjector, coreFailureInjector, benchmarkInjector
 from core_allocator import allocate_tasks
 
 
 """ Diagnostics Interface """
 class diagnostic(object):
     __metaclass__ = abc.ABCMeta
-    #diagnostics must have an injector list if fault injection will be used
+    #diagnostics must have an injectors list if fault injection will be used
+    # if a diagnostic does not implement a monitor object, it should have a wait method
 
     def __init__(self):
         self.failed = False
@@ -42,11 +43,26 @@ class diagnostic(object):
     def countermeasure_procedure(self):
         return
 
-
-class processExit(stdoutMonitor, diagnostic):
+class benchmark(diagnostic):
     def __init__(self, manager):
         self.manager = manager
-        stdoutMonitor.__init__(self, self.manager.simulation)
+        self.injectors = [benchmarkInjector(self)]
+        diagnostic.__init__(self)
+
+    def wait(self):
+        pass
+
+    def reinitialize(self):
+        pass
+
+    def countermeasure_procedure(self):
+        from scc_countermeasures import restartSimulation
+        return [[restartSimulation(self.manager)]]
+
+class processExit(checkpointMonitor, diagnostic):
+    def __init__(self, manager):
+        self.manager = manager
+        checkpointMonitor.__init__(self, self.manager)
         diagnostic.__init__(self)
         self.injectors = [processExitInjector(self)]
 
@@ -54,16 +70,15 @@ class processExit(stdoutMonitor, diagnostic):
             """ Checks for SCC FAILURE messages in the app's stdout.
                 Returns true if the stdout line does not cause the diagnostic to fail
             """
-            if line.find("FAILURE") != -1:
+            checkpointMonitor.process_line(line)
+            if line.find("FAILURE") != 1:
                 core = line[23:29]  # core number
                 if line[-12:-1] == "Interrupted": # ignore "Interrupted" messages
                     return True
-
                 try:
                     error = int(line[-4:-1])
                 except ValueError:
                     """ Ignore non-SCC messsages"""
-                    print line  # DEBUG
                     return True
 
                 if error != 255:

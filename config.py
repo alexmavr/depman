@@ -15,6 +15,7 @@ rccerun_path = '/shared/alex/brain/rccerun'
 killfoli_path = '../killfoli'
 
 # injector input files
+benchmarkInjectorFile = sim_dump_location + 'injectors/benchmark.txt'
 infoliInjectorFile = sim_dump_location + 'injectors/infolijector.txt'
 coreFailureInjectorFile = sim_dump_location + 'injectors/corefailjector.txt'
 coreShutdownInjectorFile = sim_dump_location + 'injectors/coreshutjector.txt'
@@ -28,3 +29,10 @@ moving_avg_N = 50
 
 # if False, only DUE checkpoints will be used.
 use_SDC_checkpoints = True
+
+# Checkpointing latency for the target application - in seconds
+latency = 0.23
+
+#Checkpoint interval optimization precision - selected intervals will be divisible by:
+prec_interv = 100
+

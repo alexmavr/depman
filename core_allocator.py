@@ -6,7 +6,7 @@ def coords_from_name(core_name):
     column = base_index % 6
     row = tile_row * 2 + index % 2
     return row, column
-   
+
 '''
 assert coords_from_name('rck00') == (0,0)
 assert coords_from_name('rck01') == (1,0)
@@ -47,7 +47,7 @@ def name_from_coords(x, y):
     base_x = x  - (x % 2)
     count = 2*y
     if base_x >= 2:
-        count += (base_x/2) * 12 
+        count += (base_x/2) * 12
     count += x % 2
     return 'rck' + str(count).zfill(2)
 
@@ -106,12 +106,25 @@ def allocate_tasks(num_tasks, initial_cores):
                     r = manhattan_distance(i,j,x,y)
                     if r < Matrix[x][y]:
                         Matrix[x][y] = r
-                    elif Matrix[x][y] - r < 1:
+                    elif r - 1 < Matrix[x][y] <= r:
                         Matrix[x][y] -= 0.01
 
-        max_idx = max(enumerate(flatten(Matrix)), key=lambda x:x[1] if x[1] >= 0 else 0)[0]
-        i = max_idx / 6
-        j = max_idx % 6
+        max_list = []
+
+        for x in range(8):
+            for y in range(6):
+                if Matrix[x][y] == max(flatten(Matrix)):
+                    max_list.append((x,y))
+
+        distance_to_edge = map(lambda (x,y):min([x,y,7-x,5-y]), max_list)
+
+        min_list = []
+        for x,y in max_list:
+                if min([x,y,7-x,5-y]) == min(distance_to_edge):
+                    min_list.append((x,y))
+
+        from random import choice
+        i,j = choice(min_list)
 
     for i in range(8):
         for j in range(6):
@@ -121,7 +134,9 @@ def allocate_tasks(num_tasks, initial_cores):
 
     result = []
     for i in range(8):
+        print Matrix[i]
         for j in range(6):
             if Matrix[i][j] == -2:
+                print i,j
                 result.append(name_from_coords(i, j))
     return result

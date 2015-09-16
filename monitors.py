@@ -8,7 +8,7 @@ from threading import Thread
 from subprocess import call, STDOUT
 from Queue import Queue
 
-''' Monitor Interface
+'''  Interface
     monitors are meant to be subclassed by platform-specific diagnostics.
     They handle thread-level operations on streams, files and job queues
 '''
@@ -35,6 +35,8 @@ class lineProcessor(object):
     @abc.abstractmethod
     def break_condition(self, line):
         return False
+
+
 ''' stdout_monitor objects spawn a thread that waits on the stdout of
     a target process and scans its lines through the abstract method process_line.
 '''
@@ -66,19 +68,46 @@ class stdoutMonitor(monitor):
             for line in iter(out.readline, b''):
                 valid = True
 
-                line = line.decode(sys.stdout.encoding) # fix line encoding TODO:optional?
+                line = line.decode(sys.stdout.encoding) 
                 if line != None:
                     valid = self.process_line(line)
 
                 if self.kill_thread or not valid:
                     break
-        except IOError:
+        except (IOError, TypeError) as e:
             ''' handles the case where the stdout is closed while blocking on it'''
             pass
 
     @abc.abstractmethod
     def process_line(self, line):
         return
+
+''' Intermediate stdout monitor that looks for measures of checkpoint latency and interval
+    by the application '''
+class checkpointMonitor(stdoutMonitor):
+    def __init__(self, manager):
+        self.manager = manager
+        stdoutMonitor.__init__(self, manager.simulation)
+
+    def process_line(self, line):
+        if self.manager.restarted:
+            return False
+        if line.find("R" + self.manager.cores[2][1:]) != 1:
+            if line.find("Interval") != -1:
+                try:
+                    self.manager.intervals.append(float(line.split()[-1]))
+                    return True
+                except (ValueError, TypeError) as e:
+                    pass
+            if line.find("Latency") != -1:
+                try:
+                    self.manager.latencies.append(float(line.split()[-1]))
+                    return True
+                except (ValueError, TypeError) as e:
+                    pass
+        return True
+
+
 
 ''' corePinger objects spawn a number of pinging threads and a controller thread
     that ping a list of IPs periodically. The case where some IPs are unreachable
@@ -258,7 +287,6 @@ class fileReader(monitor):
 
     def process_linelist(self, lines):
         if len(lines) == 0 and self._injectSDC:
-            print "first"
             self.line_processor.diagnostic.fail()
 
         for counter, line in enumerate(lines):
@@ -267,7 +295,6 @@ class fileReader(monitor):
 
             if len(line.split()) == 0:
                 if self._injectSDC:
-                    print "second"
                     self.line_processor.diagnostic.fail()
                     return
                 else:
